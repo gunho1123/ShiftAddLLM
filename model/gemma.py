@@ -72,8 +72,27 @@ def gemma_sequential(model, dataloader, dev):
     torch.cuda.empty_cache()
 
     outs = torch.zeros_like(inps)
-    attention_mask = cache['attention_mask']
-    position_ids = cache['position_ids']
+    # attention_mask = cache['attention_mask']
+    # position_ids = cache['position_ids']
+    attention_mask = cache.get('attention_mask', None)
+    position_ids   = cache.get('position_ids', None)
+    cache_position      = cache.get('cache_position', None)
+    if attention_mask is not None:
+        attention_mask = attention_mask.squeeze(0)
+    if position_ids is not None:
+        position_ids = position_ids.squeeze(0)
+        # cache_position = cache_position.squeeze(0)
+
+    
+
+    
+
+    quant_config_dict = None
+    if args.quant_config:
+        import json
+        with open(args.quant_config, "r") as f:
+            quant_config_dict = json.load(f)
+        print(f"quant_config: {quant_config_dict}")
 
     print('Ready.')
 
@@ -81,6 +100,14 @@ def gemma_sequential(model, dataloader, dev):
     for i in range(len(layers)):
         layer = layers[i].to(dev)
         full = find_layers(layer)
+
+        # ❶ Choose the RoPE module.
+        if hasattr(model.model, "rotary_emb"):                 # Qwen3 / Qwen2
+            rope = model.model.rotary_emb
+        elif hasattr(layer.self_attn, "rotary_emb"):    # Gemma/Llama‑style layers
+            rope = layer.self_attn.rotary_emb
+        else:
+            raise RuntimeError("No rotary_emb found; add a special‑case here.")
 
         if args.true_sequential:
             sequential = [
@@ -91,26 +118,30 @@ def gemma_sequential(model, dataloader, dev):
             ]
         else:
             sequential = [list(full.keys())]
-       
         for names in sequential:
             subset = {n: full[n] for n in names}
 
-            quant_method = {}
+        quant_method = {}
         for name in subset:
             if args.gptq or args.lut_eval:
                 quant_method[name] = GPTQ(subset[name])
             else:
                 quant_method[name] = ShiftAddLLM(subset[name])
 
+            if quant_config_dict is not None:
+                wbits = quant_config_dict['model.layers.%d.%s' % (i, name)]["bits"]
+            else:
+                wbits = args.wbits
+
             if args.gptq:
                 quant_method[name].quantizer = Quantizer()
                 quant_method[name].quantizer.configure(
-                    args.wbits, perchannel=True, sym=args.sym, mse=False, trits=args.trits
+                    wbits, perchannel=True, sym=args.sym, mse=False, trits=args.trits
                 )
             else:
                 quant_method[name].quantizer = BCQuantizer(subset[name].weight.data.size(),
                                                     groupsize=args.groupsize, 
-                                                    wbits=args.wbits,
+                                                    wbits=wbits,
                                                     rounds=args.bcq_round,
                                                     use_bst=args.use_bst, 
                                                     apot_nums=args.apot_nums)
@@ -125,7 +156,20 @@ def gemma_sequential(model, dataloader, dev):
         for name in subset:
             handles.append(subset[name].register_forward_hook(add_batch(name)))
         for j in range(args.nsamples):
-            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids, cache_position = position_ids.squeeze())[0]
+            position_embeddings = None
+            if position_ids is not None:
+                # `rotary_emb` lives inside the *attention* sub‑module
+                cos, sin = rope(inps[j].unsqueeze(0), position_ids.unsqueeze(0))           # same call Qwen3Model uses
+                position_embeddings = (cos, sin)
+            outs[j] = layer(
+                        hidden_states   = inps[j].unsqueeze(0),
+                        attention_mask  = attention_mask,
+                        position_ids    = position_ids,
+                        position_embeddings = position_embeddings,  # ← NEW
+                        cache_position  = cache_position,
+                    )[0]
+            # outs[j] = layer(
+            #     inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids, cache_position = position_ids.squeeze())[0]
         for h in handles:
             h.remove()
         for name in subset:

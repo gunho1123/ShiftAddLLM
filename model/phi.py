@@ -18,21 +18,23 @@ from quantizers.bcq_quant.quantizer import BCQuantizer
 # from lut_gemm.kernel import load_shiftaddllm_weight
 
 
-def get_llama(model, cache_dir):
+def get_phi(model, cache_dir):
     import torch
     def skip(*args, **kwargs):
         pass
     torch.nn.init.kaiming_uniform_ = skip
     torch.nn.init.uniform_ = skip
     torch.nn.init.normal_ = skip
-    from transformers import LlamaForCausalLM
-    model = LlamaForCausalLM.from_pretrained(
-        model, torch_dtype='auto', cache_dir=cache_dir)
+    from transformers import Phi3ForCausalLM
+    model = Phi3ForCausalLM.from_pretrained(
+        model, 
+        cache_dir=cache_dir,
+        torch_dtype='auto')
     model.seqlen = 2048
     return model
 
 @torch.no_grad()
-def llama_sequential(model, dataloader, dev):
+def phi_sequential(model, dataloader, dev):
     print('Starting ...')
 
     use_cache = model.config.use_cache
@@ -87,7 +89,7 @@ def llama_sequential(model, dataloader, dev):
         # cache_position = cache_position.squeeze(0)
 
     
-    
+
     
 
     quant_config_dict = None
@@ -107,8 +109,8 @@ def llama_sequential(model, dataloader, dev):
         # ❶ Choose the RoPE module.
         if hasattr(model.model, "rotary_emb"):                 # Qwen3 / Qwen2
             rope = model.model.rotary_emb
-        elif hasattr(layers.self_attn, "rotary_emb"):    # Llama‑style layers
-            rope = layers.self_attn.rotary_emb
+        elif hasattr(layer.self_attn, "rotary_emb"):    # Phi/Llama‑style layers
+            rope = layer.self_attn.rotary_emb
         else:
             raise RuntimeError("No rotary_emb found; add a special‑case here.")
 
@@ -206,7 +208,7 @@ def llama_sequential(model, dataloader, dev):
     return quantizers
 
 @torch.no_grad()
-def llama_eval(model, testenc, dev):
+def phi_eval(model, testenc, dev):
     print('Evaluating ...')
 
     testenc = testenc.input_ids
@@ -286,7 +288,7 @@ def llama_eval(model, testenc, dev):
 
     model.config.use_cache = use_cache
 
-def llama_pack3(model, quantizers):
+def phi_pack3(model, quantizers):
     layers = find_layers(model)
     layers = {n: layers[n] for n in quantizers}
     make_quant3(model, quantizers)
@@ -307,7 +309,7 @@ if __name__ == '__main__':
     if args.temp_storage is not None:
         os.makedirs(args.temp_storage, exist_ok=True)
 
-    model = get_llama(args.model, args.cache_dir)
+    model = get_phi(args.model, args.cache_dir)
     if args.load:
         model.load_state_dict(torch.load(args.load))
     model.eval()
@@ -315,6 +317,7 @@ if __name__ == '__main__':
 
     if args.load_temp_storage is not None:
         assert args.block_quant, "temp_storage only work for blockwise (i.e lat. method) quantization"
+        from lut_gemm.kernel import load_shiftaddllm_weight
         load_shiftaddllm_weight(model, args.load_temp_storage, model_name=str(args.model).split("/")[-1],
                                 wbits=args.wbits, groupsize=args.groupsize)
 
@@ -328,11 +331,11 @@ if __name__ == '__main__':
             print("quantizing with bcq")
             model = quant_model(model, qbits=args.wbits, group_size=args.groupsize)
         else:
-            quantizers = llama_sequential(model, dataloader, DEV)
+            quantizers = phi_sequential(model, dataloader, DEV)
         print("full quantization time: ",time.time() - tick)
     
     if args.save:
-        #llama_pack3(model, quantizers)
+        #phi_pack3(model, quantizers)
         torch.save(model.state_dict(), args.save)
         
     datasets = ['wikitext2', 'ptb'] 
@@ -343,4 +346,5 @@ if __name__ == '__main__':
             dataset, seed=args.seed, model=args.model, seqlen=model.seqlen
         )
         print(dataset)
-        llama_eval(model, testloader, DEV)
+        phi_eval(model, testloader, DEV)
+

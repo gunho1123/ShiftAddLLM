@@ -1,8 +1,8 @@
-model_name_or_path=meta-llama/Llama-3.1-8B
+# model_name_or_path=meta-llama/Llama-3.1-8B
 # model_name_or_path=meta-llama/Llama-3.1-70B
-# model_name_or_path=microsoft/phi-4
+model_name_or_path=microsoft/phi-4
 # model_name_or_path=Qwen/Qwen3-8B-Base
-
+cache_dir=/mnt/chatbot30TB/gunho/00_hf_models
 
 wbits=4
 groupsize=128
@@ -11,8 +11,9 @@ mkdir -p $output_dir
 
 
 
-CUDA_VISIBLE_DEVICES=0 python model/llama.py \
+CUDA_VISIBLE_DEVICES=0 python model/phi.py \
     $model_name_or_path \
+    --cache_dir $cache_dir \
     --wbits $wbits \
     --groupsize $groupsize \
     --dataset c4 \

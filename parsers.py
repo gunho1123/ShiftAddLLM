@@ -8,6 +8,10 @@ def parse_args():
 			help='LlaMa model to load; pass location of hugginface converted checkpoint.'
 	)
 	parser.add_argument(
+			'--cache_dir', type=str, default=None,
+			help='Cache directory for model weights.'
+	)
+	parser.add_argument(
 			'--dataset', type=str, default="wikitext2", choices=['wikitext2', 'ptb', 'c4'],
 			help='Where to extract calibration data from.'
 	)
