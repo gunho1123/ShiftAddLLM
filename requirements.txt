@@ -2,3 +2,4 @@ lm-eval==0.4.5
 transformers==4.51.0
 primefac
 datasets==2.19.0
+sentencepiece

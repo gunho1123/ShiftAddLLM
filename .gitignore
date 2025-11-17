@@ -163,3 +163,8 @@ cython_debug/
 
 *.pt
 *.sh
+
+meta-llama/
+microsoft/
+Qwen/
+google/

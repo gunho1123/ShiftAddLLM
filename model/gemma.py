@@ -15,17 +15,18 @@ from parsers import parse_args
 from quantizers.quant import *
 from quant_methods.quant_model_bcq import quant_model
 from quantizers.bcq_quant.quantizer import BCQuantizer
-from lut_gemm.kernel import load_shiftaddllm_weight
+# from lut_gemm.kernel import load_shiftaddllm_weight
+from transformers import AutoTokenizer
 
-def get_gemma(model):
+def get_gemma(model, cache_dir):
     import torch
     def skip(*args, **kwargs):
         pass
     torch.nn.init.kaiming_uniform_ = skip
     torch.nn.init.uniform_ = skip
     torch.nn.init.normal_ = skip
-    from transformers import GemmaForCausalLM
-    model = GemmaForCausalLM.from_pretrained(model, torch_dtype='auto')
+    from transformers import Gemma2ForCausalLM
+    model = Gemma2ForCausalLM.from_pretrained(model, torch_dtype='auto', cache_dir=cache_dir)
     model.seqlen = 2048
     return model
     
@@ -57,6 +58,7 @@ def gemma_sequential(model, dataloader, dev):
             cache['i'] += 1
             cache['attention_mask'] = kwargs['attention_mask']
             cache['position_ids'] = kwargs['position_ids']
+            cache['cache_position'] = kwargs['cache_position']
             raise ValueError
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
@@ -78,14 +80,10 @@ def gemma_sequential(model, dataloader, dev):
     position_ids   = cache.get('position_ids', None)
     cache_position      = cache.get('cache_position', None)
     if attention_mask is not None:
-        attention_mask = attention_mask.squeeze(0)
+        attention_mask = attention_mask
     if position_ids is not None:
         position_ids = position_ids.squeeze(0)
-        # cache_position = cache_position.squeeze(0)
-
-    
-
-    
+        # cache_position = cache_position.squeeze(0)    
 
     quant_config_dict = None
     if args.quant_config:
@@ -189,7 +187,20 @@ def gemma_sequential(model, dataloader, dev):
             quant_method[name].free()
 
         for j in range(args.nsamples):
-            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids, cache_position = position_ids.squeeze())[0]
+            position_embeddings = None
+            if position_ids is not None:
+                # `rotary_emb` lives inside the *attention* sub‑module
+                cos, sin = rope(inps[j].unsqueeze(0), position_ids.unsqueeze(0))           # same call Qwen3Model uses
+                position_embeddings = (cos, sin)
+            
+            outs[j] = layer(
+                        hidden_states   = inps[j].unsqueeze(0),
+                        attention_mask  = attention_mask,
+                        position_ids    = position_ids,
+                        position_embeddings = position_embeddings,  # ← NEW
+                        cache_position  = cache_position,
+                    )[0]
+            # outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids, cache_position = position_ids.squeeze())[0]
 
         layers[i] = layer.cpu()
         del layer
@@ -231,6 +242,7 @@ def gemma_eval(model, testenc, dev):
             cache['i'] += 1
             cache['attention_mask'] = kwargs['attention_mask']
             cache['position_ids'] = kwargs['position_ids']
+            cache['cache_position'] = kwargs['cache_position']
             raise ValueError
     layers[0] = Catcher(layers[0])
     for i in range(nsamples):
@@ -246,14 +258,35 @@ def gemma_eval(model, testenc, dev):
     torch.cuda.empty_cache()
 
     outs = torch.zeros_like(inps)
-    attention_mask = cache['attention_mask']
-    position_ids = cache['position_ids']
+    # attention_mask = cache['attention_mask']
+    # position_ids = cache['position_ids']
+    attention_mask = cache.get('attention_mask', None)
+    position_ids   = cache.get('position_ids', None)
+    cache_position      = cache.get('cache_position', None)
+    if attention_mask is not None:
+        attention_mask = attention_mask
+    if position_ids is not None:
+        position_ids = position_ids.squeeze(0)
+        # cache_position = cache_position.squeeze(0)
 
     for i in range(len(layers)):
         layer = layers[i].to(dev)
 
         for j in range(nsamples):
-            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids, cache_position = position_ids.squeeze())[0]
+            position_embeddings = None
+            if position_ids is not None:
+                # `rotary_emb` lives inside the *attention* sub‑module
+                cos, sin = rope(inps[j].unsqueeze(0), position_ids.unsqueeze(0))           # same call Qwen3Model uses
+                position_embeddings = (cos, sin)
+            
+            outs[j] = layer(
+                        hidden_states   = inps[j].unsqueeze(0),
+                        attention_mask  = attention_mask,
+                        position_ids    = position_ids,
+                        position_embeddings = position_embeddings,  # ← NEW
+                        cache_position  = cache_position,
+                    )[0]
+            # outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids, cache_position = position_ids.squeeze())[0]
         layers[i] = layer.cpu()
         del layer
         torch.cuda.empty_cache()
@@ -299,13 +332,15 @@ def gemma_pack3(model, quantizers):
 
 if __name__ == '__main__':
     from datautils import *
-
     args = parse_args()
 
     if args.temp_storage is not None:
         os.makedirs(args.temp_storage, exist_ok=True)
 
-    model = get_gemma(args.model)
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
+
+
+    model = get_gemma(args.model, args.cache_dir).cuda()
     if args.load:
         model.load_state_dict(torch.load(args.load))
     model.eval()
@@ -315,7 +350,7 @@ if __name__ == '__main__':
         assert args.block_quant, "temp_storage only work for blockwise (i.e lat. method) quantization"
         load_shiftaddllm_weight(model, args.load_temp_storage, model_name=str(args.model).split("/")[-1],
                                 wbits=args.wbits, groupsize=args.groupsize)
-    
+
     dataloader, testloader = get_loaders(
         args.dataset, nsamples=args.nsamples, seed=args.seed, model=args.model, seqlen=model.seqlen
     )
@@ -328,13 +363,15 @@ if __name__ == '__main__':
         else:
             quantizers = gemma_sequential(model, dataloader, DEV)
         print("full quantization time: ",time.time() - tick)
-
-    if args.save:
-        torch.save(model.state_dict(), args.save)
     
-    datasets = ['wikitext2', 'ptb']
-    if args.new_eval:
-        datasets = ['wikitext2', 'ptb-new', 'c4-new']
+    if args.save:
+        model.save_pretrained(args.save)
+        tokenizer.save_pretrained(args.save)
+        
+    datasets = ['wikitext2'] 
+    # datasets = ['wikitext2', 'ptb'] 
+    # if args.new_eval:
+    #     datasets = ['wikitext2', 'ptb-new', 'c4-new']
     for dataset in datasets:
         dataloader, testloader = get_loaders(
             dataset, seed=args.seed, model=args.model, seqlen=model.seqlen

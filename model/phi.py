@@ -16,6 +16,7 @@ from quantizers.quant import *
 from quant_methods.quant_model_bcq import quant_model
 from quantizers.bcq_quant.quantizer import BCQuantizer
 # from lut_gemm.kernel import load_shiftaddllm_weight
+from transformers import AutoTokenizer
 
 
 def get_phi(model, cache_dir):
@@ -60,6 +61,7 @@ def phi_sequential(model, dataloader, dev):
             cache['i'] += 1
             cache['attention_mask'] = kwargs['attention_mask']
             cache['position_ids'] = kwargs['position_ids']
+            cache['cache_position'] = kwargs['cache_position']
             # print(kwargs.keys())
             # exit()
             raise ValueError
@@ -249,6 +251,7 @@ def phi_eval(model, testenc, dev):
             cache['i'] += 1
             cache['attention_mask'] = kwargs['attention_mask']
             cache['position_ids'] = kwargs['position_ids']
+            cache['cache_position'] = kwargs['cache_position']
             raise ValueError
     layers[0] = Catcher(layers[0])
     for i in range(nsamples):
@@ -343,7 +346,10 @@ if __name__ == '__main__':
     if args.temp_storage is not None:
         os.makedirs(args.temp_storage, exist_ok=True)
 
-    model = get_phi(args.model, args.cache_dir)
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
+
+
+    model = get_phi(args.model, args.cache_dir).cuda()
     if args.load:
         model.load_state_dict(torch.load(args.load))
     model.eval()
@@ -351,7 +357,6 @@ if __name__ == '__main__':
 
     if args.load_temp_storage is not None:
         assert args.block_quant, "temp_storage only work for blockwise (i.e lat. method) quantization"
-        from lut_gemm.kernel import load_shiftaddllm_weight
         load_shiftaddllm_weight(model, args.load_temp_storage, model_name=str(args.model).split("/")[-1],
                                 wbits=args.wbits, groupsize=args.groupsize)
 
@@ -369,12 +374,13 @@ if __name__ == '__main__':
         print("full quantization time: ",time.time() - tick)
     
     if args.save:
-        #phi_pack3(model, quantizers)
-        torch.save(model.state_dict(), args.save)
+        model.save_pretrained(args.save)
+        tokenizer.save_pretrained(args.save)
         
-    datasets = ['wikitext2', 'ptb'] 
-    if args.new_eval:
-        datasets = ['wikitext2', 'ptb-new', 'c4-new']
+    datasets = ['wikitext2'] 
+    # datasets = ['wikitext2', 'ptb'] 
+    # if args.new_eval:
+    #     datasets = ['wikitext2', 'ptb-new', 'c4-new']
     for dataset in datasets:
         dataloader, testloader = get_loaders(
             dataset, seed=args.seed, model=args.model, seqlen=model.seqlen
