@@ -12,7 +12,7 @@ from quantizers.quant import *
 from quantizers.bcq_quant.quantizer import quantize as bcq_quantize
 from quantizers.bcq_quant.bcq_shift import quantize_shift
 from .quip_method import QuantMethod
-from lut_gemm.kernel import pack_binaryWeight, unpack_weight
+# from lut_gemm.kernel import pack_binaryWeight, unpack_weight
 
 DEBUG = False 
 

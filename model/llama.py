@@ -15,7 +15,7 @@ from parsers import parse_args
 from quantizers.quant import *
 from quant_methods.quant_model_bcq import quant_model
 from quantizers.bcq_quant.quantizer import BCQuantizer
-from lut_gemm.kernel import load_shiftaddllm_weight
+# from lut_gemm.kernel import load_shiftaddllm_weight
 
 
 def get_llama(model):
@@ -57,6 +57,8 @@ def llama_sequential(model, dataloader, dev):
             cache['i'] += 1
             cache['attention_mask'] = kwargs['attention_mask']
             cache['position_ids'] = kwargs['position_ids']
+            # print(kwargs.keys())
+            # exit()
             raise ValueError
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
@@ -72,8 +74,20 @@ def llama_sequential(model, dataloader, dev):
     torch.cuda.empty_cache()
 
     outs = torch.zeros_like(inps)
-    attention_mask = cache['attention_mask']
-    position_ids = cache['position_ids']
+    # attention_mask = cache['attention_mask']
+    # position_ids = cache['position_ids']
+    attention_mask = cache.get('attention_mask', None)
+    position_ids   = cache.get('position_ids', None)
+    cache_position      = cache.get('cache_position', None)
+    if attention_mask is not None:
+        attention_mask = attention_mask.squeeze(0)
+    if position_ids is not None:
+        position_ids = position_ids.squeeze(0)
+        # cache_position = cache_position.squeeze(0)
+
+    
+    
+    
 
     quant_config_dict = None
     if args.quant_config:
@@ -88,6 +102,14 @@ def llama_sequential(model, dataloader, dev):
     for i in range(len(layers)):
         layer = layers[i].to(dev)
         full = find_layers(layer)
+
+        # ❶ Choose the RoPE module.
+        if hasattr(model.model, "rotary_emb"):                 # Qwen3 / Qwen2
+            rope = model.model.rotary_emb
+        elif hasattr(layers.self_attn, "rotary_emb"):    # Llama‑style layers
+            rope = layers.self_attn.rotary_emb
+        else:
+            raise RuntimeError("No rotary_emb found; add a special‑case here.")
 
         if args.true_sequential:
             sequential = [
@@ -135,7 +157,20 @@ def llama_sequential(model, dataloader, dev):
         for name in subset:
             handles.append(subset[name].register_forward_hook(add_batch(name)))
         for j in range(args.nsamples):
-            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids, cache_position = position_ids.squeeze())[0]
+            position_embeddings = None
+            if position_ids is not None:
+                # `rotary_emb` lives inside the *attention* sub‑module
+                cos, sin = rope(inps[j].unsqueeze(0), position_ids.unsqueeze(0))           # same call Qwen3Model uses
+                position_embeddings = (cos, sin)
+            outs[j] = layer(
+                        hidden_states   = inps[j].unsqueeze(0),
+                        attention_mask  = attention_mask,
+                        position_ids    = position_ids,
+                        position_embeddings = position_embeddings,  # ← NEW
+                        cache_position  = cache_position,
+                    )[0]
+            # outs[j] = layer(
+            #     inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids, cache_position = position_ids.squeeze())[0]
         for h in handles:
             h.remove()
         for name in subset:
