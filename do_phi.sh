@@ -2,7 +2,7 @@
 # model_name_or_path=meta-llama/Llama-3.1-70B
 model_name_or_path=microsoft/phi-4
 # model_name_or_path=Qwen/Qwen3-8B-Base
-cache_dir=/mnt/chatbot30TB/gunho/00_hf_models
+cache_dir=
 
 wbits=4
 groupsize=128

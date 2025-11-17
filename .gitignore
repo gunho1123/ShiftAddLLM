@@ -162,3 +162,4 @@ cython_debug/
 #.idea/
 
 *.pt
+do_*.sh
