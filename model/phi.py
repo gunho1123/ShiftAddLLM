@@ -194,7 +194,20 @@ def phi_sequential(model, dataloader, dev):
             quant_method[name].free()
 
         for j in range(args.nsamples):
-            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids, cache_position = position_ids.squeeze())[0]
+            # outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids, cache_position = position_ids.squeeze())[0]
+            position_embeddings = None
+            if position_ids is not None:
+                # `rotary_emb` lives inside the *attention* sub‑module
+                cos, sin = rope(inps[j].unsqueeze(0), position_ids.unsqueeze(0))
+                position_embeddings = (cos, sin)
+            
+            outs[j] = layer(
+                        hidden_states   = inps[j].unsqueeze(0),
+                        attention_mask  = attention_mask,
+                        position_ids    = position_ids,
+                        position_embeddings = position_embeddings,  # ← NEW
+                        cache_position  = cache_position,
+                    )[0]
 
         layers[i] = layer.cpu()
         del layer
@@ -251,14 +264,35 @@ def phi_eval(model, testenc, dev):
     torch.cuda.empty_cache()
 
     outs = torch.zeros_like(inps)
-    attention_mask = cache['attention_mask']
-    position_ids = cache['position_ids']
+    # attention_mask = cache['attention_mask']
+    # position_ids = cache['position_ids']
+    attention_mask = cache.get('attention_mask', None)
+    position_ids   = cache.get('position_ids', None)
+    cache_position      = cache.get('cache_position', None)
+    if attention_mask is not None:
+        attention_mask = attention_mask.squeeze(0)
+    if position_ids is not None:
+        position_ids = position_ids.squeeze(0)
+        # cache_position = cache_position.squeeze(0)
 
     for i in range(len(layers)):
         layer = layers[i].to(dev)
 
         for j in range(nsamples):
-            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids, cache_position = position_ids.squeeze())[0]
+            position_embeddings = None
+            if position_ids is not None:
+                # `rotary_emb` lives inside the *attention* sub‑module
+                cos, sin = rope(inps[j].unsqueeze(0), position_ids.unsqueeze(0))
+                position_embeddings = (cos, sin)
+            
+            outs[j] = layer(
+                        hidden_states   = inps[j].unsqueeze(0),
+                        attention_mask  = attention_mask,
+                        position_ids    = position_ids,
+                        position_embeddings = position_embeddings,  # ← NEW
+                        cache_position  = cache_position,
+                    )[0]
+            # outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids, cache_position = position_ids.squeeze())[0]
         layers[i] = layer.cpu()
         del layer
         torch.cuda.empty_cache()
